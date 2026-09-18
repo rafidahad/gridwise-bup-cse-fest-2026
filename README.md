@@ -135,7 +135,7 @@ inside the PuLP wheel, so no separate solver installation is needed locally.
 **1. Get the source**
 
 ```bash
-git clone https://github.com/plasma-gith/gridwise-bup-cse-fest-2026.git
+git clone https://github.com/rafidahad/gridwise-bup-cse-fest-2026.git
 ```
 
 ```bash
