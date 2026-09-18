@@ -106,11 +106,14 @@ scripts/
   verify_core.py         offline: compiler + optimizer + replay vs published optima
   run_public_cases.py    HTTP: the 10 public cases against a running service
   semantic_eval.py       live: model accuracy on the held-out labelled set
-tests/                   172 tests
+tests/                   187 tests
   reference_dp.py        an independent optimum, sharing no code with the LP
 data/
   public_cases.json      the organizer's 10 public sample cases
   semantic_cases.json    34 held-out labelled interpretation cases
+  packs/                 team-generated packs: 132 more interpretation cases,
+                         18 with reference optimal costs, plus an HTTP
+                         robustness checklist
 docs/
   PROBLEM_STATEMENT.md   transcription of the organizer problem statement
   PARTICIPANT_GUIDE.md   transcription of the organizer guide and rubric
@@ -211,10 +214,10 @@ holds **placeholders only, never real credentials**.
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `GRIDWISE_PRIMARY_API_KEY` | Primary provider key (Groq) | — |
+| `GRIDWISE_PRIMARY_API_KEYS` | Primary provider keys (Groq), comma separated | — |
 | `GRIDWISE_PRIMARY_BASE_URL` | Primary OpenAI-compatible base URL | `https://api.groq.com/openai/v1` |
-| `GRIDWISE_PRIMARY_MODEL` | Primary model identifier | `llama-3.3-70b-versatile` |
-| `GRIDWISE_BACKUP_API_KEY` | Backup provider key (NVIDIA NIM) | — |
+| `GRIDWISE_PRIMARY_MODEL` | Primary model identifier | `openai/gpt-oss-120b` |
+| `GRIDWISE_BACKUP_API_KEYS` | Backup provider keys (NVIDIA NIM), comma separated | — |
 | `GRIDWISE_BACKUP_BASE_URL` | Backup OpenAI-compatible base URL | `https://integrate.api.nvidia.com/v1` |
 | `GRIDWISE_BACKUP_MODEL` | Backup model identifier | `meta/llama-3.3-70b-instruct` |
 | `GRIDWISE_TEMPERATURE` | Sampling temperature | `0` |
@@ -237,6 +240,24 @@ backup, which a second model at the same provider could not guarantee. Both
 models perform genuine language interpretation, pass through identical schema
 guardrails, and are measured on the same held-out semantic set.
 
+### Key rotation
+
+Each provider accepts several comma-separated keys. When a key is rate limited,
+out of quota, or rejected outright, the service advances to the next one and
+remembers the move, so later requests skip the spent key rather than paying for
+the same rejection again. At most three credentials are tried inside one logical
+attempt, so exhausted keys cannot eat the request deadline.
+
+Rotation is **not** a second interpretation attempt and does not consume the
+primary/repair/backup budget — the same question is re-asked on a credential
+that still has headroom. A timeout or connection failure is the provider's
+fault rather than the key's, so it fails over to the independent backup instead
+of burning the remaining keys. Keys never appear in logs; only their position
+(`key 2/4`) is recorded.
+
+The singular `GRIDWISE_PRIMARY_API_KEY` / `GRIDWISE_BACKUP_API_KEY` names still
+work for a single credential.
+
 ### Inference settings
 
 Temperature is `0` for extraction, and a seed is sent only when
@@ -253,6 +274,11 @@ accuracy. That is measured separately:
 ```bash
 python scripts/semantic_eval.py --role primary --repeat 3 --json primary.json
 ```
+
+`--packs all` (the default) scores 166 cases / 201 notes across the held-out set
+and the three team packs. Narrow it with
+`--packs interpretation_cases,gridwise_edge_case_pack` when iterating on the
+prompt.
 
 ```bash
 python scripts/semantic_eval.py --role backup --repeat 3 --json backup.json
@@ -609,7 +635,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-Expected: **172 passed**, in roughly 40 seconds. No network access and no API
+Expected: **187 passed**, in roughly 40 seconds. No network access and no API
 key is needed — provider calls are stubbed so the contract, compiler, optimizer,
 replay, and failover *policy* are all exercised deterministically.
 
@@ -622,6 +648,7 @@ replay, and failover *policy* are all exercised deterministically.
 | `test_llm.py` | Call budget, targeted repair, full regeneration, failover, no dropped notes |
 | `test_generalization.py` | Generated scenarios, an independently computed optimum, concurrency, numeric edges |
 | `test_semantic_dataset.py` | The labelled set is internally valid and genuinely held out |
+| `test_team_packs.py` | The extra packs' labels are valid, and their 18 reference optima are reproduced — a second independent check on the optimizer |
 
 ### Offline core check
 

@@ -36,6 +36,68 @@ from app.schemas import ScenarioRequest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DATASET = ROOT / "data" / "semantic_cases.json"
+PACK_DIR = ROOT / "data" / "packs"
+
+
+def _load_pack(name: str) -> list[dict]:
+    """Normalise a test pack into {id, cluster, battery_capacity_kwh, notes, expected}.
+
+    Four packs with three different shapes feed the same scorer, so a prompt
+    change can be measured across all of them at once. Only the interpretation
+    layer is covered here; `robustness_cases.json` targets HTTP behaviour and is
+    exercised by the pytest suite instead.
+    """
+    if name == "held-out":
+        return json.loads(DATASET.read_text(encoding="utf-8"))["cases"]
+
+    path = PACK_DIR / f"{name}.json"
+    if not path.exists():
+        return []
+    raw = json.loads(path.read_text(encoding="utf-8"))
+
+    cases: list[dict] = []
+    if name == "interpretation_cases":
+        for case in raw["cases"]:
+            cases.append(
+                {
+                    "id": case["id"],
+                    "cluster": case.get("family", "unknown"),
+                    "battery_capacity_kwh": case["battery_capacity_kwh"],
+                    "notes": case["notes"],
+                    "expected": case["expected"],
+                }
+            )
+    elif name == "scenario_cases":
+        for case in raw["scenarios"]:
+            cases.append(
+                {
+                    "id": case["id"],
+                    "cluster": "scenario",
+                    "battery_capacity_kwh": case["battery"]["capacity_kwh"],
+                    "notes": case["operator_notes"],
+                    "expected": case["expected_interpretation"],
+                }
+            )
+    elif name == "gridwise_edge_case_pack":
+        for case in raw["cases"]:
+            cases.append(
+                {
+                    "id": case["id"],
+                    "cluster": "edge",
+                    "battery_capacity_kwh": case["input"]["battery"]["capacity_kwh"],
+                    "notes": case["input"]["operator_notes"],
+                    "expected": case["expected_output"]["directive_interpretation"],
+                }
+            )
+    return cases
+
+
+PACK_NAMES = (
+    "held-out",
+    "interpretation_cases",
+    "scenario_cases",
+    "gridwise_edge_case_pack",
+)
 
 
 def build_request(case: dict) -> ScenarioRequest:
@@ -148,13 +210,25 @@ async def main_async(args: argparse.Namespace) -> int:
         )
         return 2
 
-    dataset = json.loads(DATASET.read_text(encoding="utf-8"))
-    cases = dataset["cases"]
+    wanted = PACK_NAMES if args.packs == "all" else tuple(args.packs.split(","))
+    cases = []
+    by_pack: dict[str, list[str]] = {}
+    for name in wanted:
+        loaded = _load_pack(name.strip())
+        for case in loaded:
+            case["_pack"] = name.strip()
+        by_pack[name.strip()] = [c["id"] for c in loaded]
+        cases.extend(loaded)
+
+    if not cases:
+        print(f"no cases loaded for --packs {args.packs}")
+        return 2
 
     print(f"model   : {provider.model}")
     print(f"endpoint: {provider.base_url}")
     print(f"settings: temperature={settings.temperature} seed={settings.seed} "
           f"prompt={settings.prompt_version} schema={settings.schema_version}")
+    print(f"packs   : " + ", ".join(f"{k} ({len(v)})" for k, v in by_pack.items()))
     print(f"cases   : {len(cases)} x {args.repeat} run(s)\n")
 
     totals: dict[str, list[bool]] = defaultdict(list)
@@ -201,6 +275,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 {
                     "run": run_index,
                     "case": case["id"],
+                    "pack": case.get("_pack", "held-out"),
                     "cluster": case["cluster"],
                     "ok": case_ok,
                     "latency_s": round(elapsed, 3),
@@ -224,6 +299,15 @@ async def main_async(args: argparse.Namespace) -> int:
     robustness = 100.0 * (
         1 - len(multi_signature_clusters) / max(1, len(cluster_signatures))
     )
+
+    if len(by_pack) > 1:
+        print("exact-case rate by pack")
+        for name in by_pack:
+            rows = [r for r in records if r["pack"] == name]
+            if rows:
+                ok = sum(1 for r in rows if r["ok"])
+                print(f"  {name:<26} {ok:>4}/{len(rows):<4} {100*ok/len(rows):5.1f}%")
+        print()
 
     print("score by rubric dimension")
     print(f"  relevance / no_op        {pct('relevance'):6.1f}%")
@@ -289,6 +373,8 @@ async def main_async(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--role", choices=("primary", "backup"), default="primary")
+    parser.add_argument("--packs", default="all",
+                        help="all, or a comma-separated subset: " + ",".join(PACK_NAMES))
     parser.add_argument("--repeat", type=int, default=1,
                         help="runs per case; >1 measures run-to-run consistency")
     parser.add_argument("--json", help="write a machine-readable record here")

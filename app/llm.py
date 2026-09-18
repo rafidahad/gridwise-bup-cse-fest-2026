@@ -81,30 +81,104 @@ shapes:
   max_grid_window         {"hours": [int, ...], "max_grid_kwh": number}
   no_op                   null
 
-RULES
+Work through the three steps below for every note, in order.
+
+STEP 1 - WORK OUT THE HOURS BY ARITHMETIC, NEVER BY GUESSING
+
+Convert the start time and the end time to 24-hour numbers. Then list every
+hour from the start up to but NOT including the end:
+
+    hours = [start, start+1, ..., end-1]        and     count = end - start
+
+Do this subtraction every single time. Windows are not all the same length.
+
+    "6 PM until 10 PM"   start 18, end 22  ->  [18,19,20,21]   count 4
+    "7 PM until 9 PM"    start 19, end 21  ->  [19,20]         count 2
+    "1 PM until 4 PM"    start 13, end 16  ->  [13,14,15]      count 3
+    "1 PM to 3 PM"       start 13, end 15  ->  [13,14]         count 2
+    "11 AM to 2 PM"      start 11, end 14  ->  [11,12,13]      count 3
+    "10 AM until noon"   start 10, end 12  ->  [10,11]         count 2
+    "13:00 to 15:00"     start 13, end 15  ->  [13,14]         count 2
+
+The end hour is ALWAYS left out. "until 10 PM" does not include hour 22.
+Midnight is 0 and noon is 12. "until midnight" means end 24, so it stops at 23.
+
+Other ways a window can be written:
+
+    crosses midnight  "10 PM until 1 AM"        -> [0,22,23] (ascending!)
+    open ended        "from 9 PM onward"        -> [21,22,23]
+    stated duration   "three hours from 3 PM"   -> [15,16,17]
+    relative          "last two hours of today" -> [22,23]
+    the word through  "11 AM through 1 PM"      -> [11,12] (same as until)
+    whole day, or no time given at all          -> all of [0,1,...,23]
+    vague period: morning 6-12, afternoon 12-18, evening 18-24, night 22-6
+
+Never return an empty hours array for an applicable directive.
+
+STEP 2 - IF IT IS ABOUT THE BATTERY, WHICH DIRECTION?
+
+    charge    = energy going INTO the battery
+                charger, charging circuit, top up, put energy in, recharge
+    discharge = energy coming OUT of the battery to serve the campus
+                discharge, draw from, supply load, battery output, drain
+
+    "the charger will be isolated"          -> no_charge_window
+    "the charging circuit is unavailable"   -> no_charge_window
+    "do not put energy into the battery"    -> no_charge_window
+    "the battery must not discharge"        -> no_discharge_window
+    "do not draw from the battery"          -> no_discharge_window
+    "the battery must not supply load"      -> no_discharge_window
+    "keep the battery off the bus"          -> no_discharge_window
+
+A note about the charger restricts charging ONLY. A note about supplying the
+campus restricts discharging ONLY. One note never restricts both directions.
+
+STEP 3 - DOES THIS NOTE CHANGE TODAY'S ELECTRICITY SCHEDULE?
+
+Ask: does it change how much grid, solar, or battery energy is used during
+hours 0-23 today? If not, it is no_op.
+
+These are all no_op even though they sound relevant:
+
+    "we will install more solar panels next semester"  - wrong timeframe
+    "last week's firmware update improved charging"    - already happened
+    "tomorrow's tariff will be published this evening" - tariff is fixed input
+    "HR orientation in the auditorium 2 PM to 4 PM"    - a clean time window
+                                                         attached to nothing
+                                                         schedulable
+    "water pump maintenance 10 AM until noon"          - no supported type fits
+    "the rooftop access door lock is being replaced"   - not about solar
+    "a vendor demo of new inverters next Thursday"     - wrong day
+
+Do NOT invent a directive merely because a note mentions solar, battery,
+charge, grid, energy, hours, schedule, maintenance, or a clock time.
+
+Equally, do NOT dismiss a real instruction as no_op. If the note states an
+operating restriction that applies today AND one of the five types fits it,
+return that type.
+
+VALUE RULES
 
 1. applies is true for every directive except no_op. For no_op, applies is \
 false and structured_adjustment is null.
-2. A note that does not change today's 24-hour electricity schedule is no_op. \
-Campus news, deadlines, bookings, menus, room changes, and announcements about \
-other days are no_op.
-3. hours holds unique integers 0-23 in ascending order, and is never empty for \
-an applicable directive.
-4. Time windows are whole hours, start inclusive and end exclusive. "1 PM to \
-3 PM" is [13, 14]. "6 PM until 9 PM" is [18, 19, 20]. "11 AM to 2 PM" is \
-[11, 12, 13]. Noon is 12; midnight is 0. "13:00 to 15:00" is [13, 14].
-5. For solar_reduction, factor is the fraction of solar that REMAINS, between \
-0 and 1.
+2. hours holds unique integers 0-23 in ascending order.
+3. For solar_reduction, factor is the fraction of solar that REMAINS, 0 to 1.
    - "drops to 20%", "only one fifth remains", "reduced to 20%"  -> 0.2
    - "an 80% reduction", "reduced by 80%", "down by four fifths" -> 0.2
    - "reduced to 80%"                                            -> 0.8
    - "about half the forecast"                                   -> 0.5
-   Read "to X%" as factor X/100 and "by X%" as factor (100-X)/100.
-6. A reserve given as a percentage is that percentage of the battery capacity \
-supplied below. 50% of a 200 kWh battery is 100.
-7. Never invent demand, solar, tariff, or battery values, and never use a \
-directive_type outside the list above. Extract only what the note states.
-8. Keep each explanation to one short sentence.
+   - "completely unavailable", "treat solar as zero"             -> 0.0
+   Read "to X%" as factor X/100, and "by X%" as factor (100-X)/100.
+   A reduction of more than 100% still leaves nothing, so use factor 0.
+4. A reserve given as a percentage or a word fraction is that share of the
+   battery capacity supplied below. 50% of a 200 kWh battery is 100. Three
+   quarters of a 240 kWh battery is 180. A reserve may never exceed capacity;
+   if a note asks for more, use the capacity value.
+5. If one note gives two separate windows for the SAME restriction, merge them
+   into one entry: "no charging 2-4 AM and again 1-3 PM" -> hours [2,3,13,14].
+6. Never invent demand, solar, tariff, or battery values, and never use a
+   directive_type outside the list above. Extract only what the note states.
+7. Keep each explanation to one short sentence.
 """
 
 REPAIR_PREAMBLE = """\
@@ -213,11 +287,35 @@ class RequestBudget:
 # ---------------------------------------------------------------------------
 
 
-def _client(provider: ProviderSettings) -> AsyncOpenAI:
+#: Where each provider's key cursor currently sits. A benign race between
+#: concurrent requests only costs one wasted attempt, so no lock is taken.
+_KEY_CURSOR: dict[str, int] = {}
+
+#: Most credentials to try inside one logical attempt. Capped so a wall of
+#: exhausted keys cannot eat the whole request deadline.
+MAX_KEY_ATTEMPTS = 3
+
+
+def _credential_is_spent(exc: Exception) -> bool:
+    """True when the failure is about *this key*, not about the provider.
+
+    Rotating helps for a rate limit, an exhausted quota, or a key that is
+    rejected outright. It cannot help for a timeout, a connection failure, or a
+    malformed request - those are the provider's or ours, and the caller should
+    fail over to the independent backup instead of burning the other keys.
+    """
+    name = type(exc).__name__
+    if name in {"RateLimitError", "AuthenticationError", "PermissionDeniedError"}:
+        return True
+    status = getattr(exc, "status_code", None)
+    return status in {401, 402, 403, 429}
+
+
+def _client(provider: ProviderSettings, api_key: str) -> AsyncOpenAI:
     # max_retries=0: plan S6.1 counts SDK retries against the same budget, so
     # retrying is this module's decision to make, not the SDK's.
     return AsyncOpenAI(
-        api_key=provider.api_key,
+        api_key=api_key,
         base_url=provider.base_url,
         timeout=provider.timeout_s,
         max_retries=0,
@@ -257,13 +355,14 @@ def _extract_entries(content: str) -> Any:
     return payload
 
 
-async def _call_model(
+async def _attempt(
     provider: ProviderSettings,
+    api_key: str,
     messages: list[dict[str, str]],
     settings: Settings,
     timeout_s: float,
-) -> Any:
-    """One inference call. Raises ProviderFailure for anything unusable."""
+) -> str:
+    """One HTTP call on one credential. Returns the raw message content."""
     kwargs: dict[str, Any] = {
         "model": provider.model,
         "messages": messages,
@@ -276,34 +375,91 @@ async def _call_model(
         # and providers differ in whether they honour it at all (plan S6.3).
         kwargs["seed"] = settings.seed
 
-    client = _client(provider)
-    started = time.monotonic()
+    client = _client(provider, api_key)
     try:
         completion = await asyncio.wait_for(
             client.chat.completions.create(**kwargs), timeout=timeout_s
         )
-    except asyncio.TimeoutError as exc:
-        raise ProviderFailure(f"{provider.role} timed out after {timeout_s:.1f}s") from exc
-    except Exception as exc:
-        # Transport errors, rate limits, quota rejections, refusals: all one
-        # thing from here - this provider did not deliver.
-        raise ProviderFailure(f"{provider.role} call failed: {type(exc).__name__}") from exc
     finally:
         await client.close()
 
-    elapsed = time.monotonic() - started
     try:
-        content = completion.choices[0].message.content or ""
+        return completion.choices[0].message.content or ""
     except (AttributeError, IndexError) as exc:
         raise ProviderFailure(f"{provider.role} returned no message content") from exc
 
-    logger.info(
-        "inference role=%s model=%s elapsed=%.2fs", provider.role, provider.model, elapsed
+
+async def _call_model(
+    provider: ProviderSettings,
+    messages: list[dict[str, str]],
+    settings: Settings,
+    timeout_s: float,
+) -> Any:
+    """One logical inference attempt, rotating credentials as needed.
+
+    Cycling keys is NOT a second interpretation attempt and does not consume
+    the primary/repair/backup budget in plan S6.1 - the same question is simply
+    re-asked on a credential that still has headroom. It does consume wall
+    clock, so the number of credentials tried is capped and the caller's
+    deadline still bounds the whole thing.
+    """
+    keys = provider.api_keys
+    if not keys:
+        raise ProviderFailure(f"{provider.role} has no API key configured")
+
+    attempts = min(len(keys), MAX_KEY_ATTEMPTS)
+    start_index = _KEY_CURSOR.get(provider.role, 0)
+    last_failure = "no attempt was made"
+
+    for offset in range(attempts):
+        index = (start_index + offset) % len(keys)
+        started = time.monotonic()
+        try:
+            content = await _attempt(
+                provider, keys[index], messages, settings, timeout_s
+            )
+        except asyncio.TimeoutError as exc:
+            # A timeout is about the provider, not the credential.
+            raise ProviderFailure(
+                f"{provider.role} timed out after {timeout_s:.1f}s"
+            ) from exc
+        except ProviderFailure:
+            raise
+        except Exception as exc:
+            reason = type(exc).__name__
+            if _credential_is_spent(exc) and offset + 1 < attempts:
+                # Remember the move so later requests skip the spent key too.
+                _KEY_CURSOR[provider.role] = (index + 1) % len(keys)
+                logger.warning(
+                    "inference role=%s key %d/%d rejected (%s); rotating",
+                    provider.role,
+                    index + 1,
+                    len(keys),
+                    reason,
+                )
+                last_failure = reason
+                continue
+            raise ProviderFailure(
+                f"{provider.role} call failed: {reason}"
+            ) from exc
+
+        _KEY_CURSOR[provider.role] = index
+        logger.info(
+            "inference role=%s model=%s key=%d/%d elapsed=%.2fs",
+            provider.role,
+            provider.model,
+            index + 1,
+            len(keys),
+            time.monotonic() - started,
+        )
+        entries = _extract_entries(content)
+        if entries is None:
+            raise ProviderFailure(f"{provider.role} returned output that is not JSON")
+        return entries
+
+    raise ProviderFailure(
+        f"{provider.role} exhausted {attempts} credential(s): {last_failure}"
     )
-    entries = _extract_entries(content)
-    if entries is None:
-        raise ProviderFailure(f"{provider.role} returned output that is not JSON")
-    return entries
 
 
 # ---------------------------------------------------------------------------

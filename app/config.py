@@ -41,9 +41,26 @@ def _env_int_or_none(name: str) -> int | None:
         return None
 
 
+def _env_keys(plural: str, singular: str) -> tuple[str, ...]:
+    """Read a comma-separated key list, falling back to the single-key name.
+
+    Several keys for one provider are rotated on rate-limit and quota errors,
+    which is the cheapest mitigation for the per-key TPM/RPM ceilings that bite
+    during a judging burst. Duplicates and blanks are dropped, and order is
+    preserved so the first key stays the default.
+    """
+    raw = os.getenv(plural) or os.getenv(singular) or ""
+    seen: list[str] = []
+    for candidate in raw.split(","):
+        key = candidate.strip()
+        if key and key not in seen:
+            seen.append(key)
+    return tuple(seen)
+
+
 @dataclass(frozen=True)
 class ProviderSettings:
-    """One OpenAI-compatible inference endpoint.
+    """One OpenAI-compatible inference endpoint, with one or more credentials.
 
     Groq and NVIDIA NIM both speak the OpenAI chat-completions format, so a
     single client shape covers the primary and the backup while they remain
@@ -51,22 +68,28 @@ class ProviderSettings:
     """
 
     role: str
-    api_key: str
+    api_keys: tuple[str, ...]
     base_url: str
     model: str
     timeout_s: float
 
     @property
+    def api_key(self) -> str:
+        """The first credential. Rotation is handled in `app.llm`."""
+        return self.api_keys[0] if self.api_keys else ""
+
+    @property
     def configured(self) -> bool:
-        return bool(self.api_key) and bool(self.base_url) and bool(self.model)
+        return bool(self.api_keys) and bool(self.base_url) and bool(self.model)
 
     def describe(self) -> dict[str, object]:
+        """Redacted. Reports how many keys exist, never what they are."""
         return {
             "role": self.role,
             "base_url": self.base_url,
             "model": self.model,
             "timeout_s": self.timeout_s,
-            "api_key_present": bool(self.api_key),
+            "api_keys_configured": len(self.api_keys),
         }
 
 
@@ -84,7 +107,7 @@ class Settings:
     log_level: str = "INFO"
     # Bumped whenever the prompt text or the interpretation schema changes, so
     # recorded evidence and any future cache stay attributable (plan §6.3).
-    prompt_version: str = "2026-09-18.1"
+    prompt_version: str = "2026-09-18.2"
     schema_version: str = "1.0.0"
     providers: tuple[ProviderSettings, ...] = field(default_factory=tuple)
 
@@ -106,14 +129,14 @@ class Settings:
 def load_settings() -> Settings:
     primary = ProviderSettings(
         role="primary",
-        api_key=_env_str("GRIDWISE_PRIMARY_API_KEY", ""),
+        api_keys=_env_keys("GRIDWISE_PRIMARY_API_KEYS", "GRIDWISE_PRIMARY_API_KEY"),
         base_url=_env_str("GRIDWISE_PRIMARY_BASE_URL", "https://api.groq.com/openai/v1"),
-        model=_env_str("GRIDWISE_PRIMARY_MODEL", "llama-3.3-70b-versatile"),
+        model=_env_str("GRIDWISE_PRIMARY_MODEL", "openai/gpt-oss-120b"),
         timeout_s=_env_float("GRIDWISE_PRIMARY_TIMEOUT_S", 9.0),
     )
     backup = ProviderSettings(
         role="backup",
-        api_key=_env_str("GRIDWISE_BACKUP_API_KEY", ""),
+        api_keys=_env_keys("GRIDWISE_BACKUP_API_KEYS", "GRIDWISE_BACKUP_API_KEY"),
         base_url=_env_str("GRIDWISE_BACKUP_BASE_URL", "https://integrate.api.nvidia.com/v1"),
         model=_env_str("GRIDWISE_BACKUP_MODEL", "meta/llama-3.3-70b-instruct"),
         timeout_s=_env_float("GRIDWISE_BACKUP_TIMEOUT_S", 9.0),

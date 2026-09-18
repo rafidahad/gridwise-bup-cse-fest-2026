@@ -27,10 +27,10 @@ from app.schemas import DirectiveType
 from tests.conftest import scenario
 
 
-def provider(role: str, model: str) -> ProviderSettings:
+def provider(role: str, model: str, keys: int = 1) -> ProviderSettings:
     return ProviderSettings(
         role=role,
-        api_key="placeholder-not-a-real-key",
+        api_keys=tuple(f"placeholder-{role}-{i}" for i in range(keys)),
         base_url=f"https://{role}.example/v1",
         model=model,
         timeout_s=5.0,
@@ -260,7 +260,9 @@ def test_repair_is_skipped_when_time_is_short():
 
 def test_unconfigured_primary_falls_through_to_the_backup():
     cfg = settings()
-    blank = ProviderSettings(role="primary", api_key="", base_url="", model="", timeout_s=5)
+    blank = ProviderSettings(
+        role="primary", api_keys=(), base_url="", model="", timeout_s=5
+    )
     cfg = Settings(primary=blank, backup=cfg.backup, providers=(blank, cfg.backup))
     recorder = Recorder([entry(0)])
     outcome = run(recorder, cfg=cfg)
@@ -297,3 +299,138 @@ def test_prompt_states_the_two_percentage_readings():
     assert "drops to 20%" in system
     assert "an 80% reduction" in system
     assert "reduced to 80%" in system
+
+
+# ---------------------------------------------------------------------------
+# API-key rotation
+# ---------------------------------------------------------------------------
+
+
+class FakeRateLimit(Exception):
+    """Stands in for the SDK's RateLimitError, matched by class name."""
+
+
+FakeRateLimit.__name__ = "RateLimitError"
+
+
+class FakeAuthError(Exception):
+    pass
+
+
+FakeAuthError.__name__ = "AuthenticationError"
+
+
+class FakeBadRequest(Exception):
+    """A provider-side or request-side fault that rotating cannot fix."""
+
+    status_code = 400
+
+
+class KeyRecorder:
+    """Stands in for `_attempt`, recording which credential was used."""
+
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+        self.keys: list[str] = []
+
+    async def __call__(self, prov, api_key, messages, cfg, timeout_s):
+        self.keys.append(api_key)
+        outcome = self.outcomes.pop(0) if self.outcomes else '{"interpretations": []}'
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def run_call(recorder, prov, cfg=None, timeout_s=5.0):
+    original = llm._attempt
+    llm._attempt = recorder
+    llm._KEY_CURSOR.clear()
+    try:
+        return asyncio.run(
+            llm._call_model(prov, [{"role": "user", "content": "x"}], cfg or settings(), timeout_s)
+        )
+    finally:
+        llm._attempt = original
+        llm._KEY_CURSOR.clear()
+
+
+GOOD = '{"interpretations": [{"note_index": 0, "applies": false, "directive_type": "no_op", "structured_adjustment": null, "explanation": "x"}]}'
+
+
+def test_a_rate_limited_key_rotates_to_the_next_one():
+    prov = provider("primary", "m", keys=3)
+    recorder = KeyRecorder(FakeRateLimit("429"), GOOD)
+    entries = run_call(recorder, prov)
+    assert len(entries) == 1
+    assert recorder.keys == ["placeholder-primary-0", "placeholder-primary-1"]
+
+
+def test_a_rejected_key_rotates_too():
+    prov = provider("primary", "m", keys=2)
+    recorder = KeyRecorder(FakeAuthError("401"), GOOD)
+    assert run_call(recorder, prov)
+    assert len(recorder.keys) == 2
+
+
+def test_rotation_stops_at_the_attempt_cap():
+    """Exhausted keys must not eat the whole request deadline."""
+    prov = provider("primary", "m", keys=8)
+    recorder = KeyRecorder(*[FakeRateLimit("429")] * 8)
+    with pytest.raises(ProviderFailure):
+        run_call(recorder, prov)
+    assert len(recorder.keys) == llm.MAX_KEY_ATTEMPTS
+
+
+def test_a_timeout_does_not_burn_the_other_keys():
+    """A timeout is the provider's fault; the backup is the right next step."""
+    prov = provider("primary", "m", keys=4)
+    recorder = KeyRecorder(asyncio.TimeoutError())
+    with pytest.raises(ProviderFailure, match="timed out"):
+        run_call(recorder, prov)
+    assert len(recorder.keys) == 1
+
+
+def test_a_bad_request_does_not_rotate():
+    """Rotating cannot fix a malformed request or an unknown model."""
+    prov = provider("primary", "m", keys=4)
+    recorder = KeyRecorder(FakeBadRequest("bad model"))
+    with pytest.raises(ProviderFailure):
+        run_call(recorder, prov)
+    assert len(recorder.keys) == 1
+
+
+def test_the_cursor_sticks_so_later_requests_skip_a_spent_key():
+    prov = provider("primary", "m", keys=3)
+    original = llm._attempt
+    llm._KEY_CURSOR.clear()
+    try:
+        first = KeyRecorder(FakeRateLimit("429"), GOOD)
+        llm._attempt = first
+        asyncio.run(llm._call_model(prov, [], settings(), 5.0))
+
+        second = KeyRecorder(GOOD)
+        llm._attempt = second
+        asyncio.run(llm._call_model(prov, [], settings(), 5.0))
+        # Key 0 was spent, so the next request starts at key 1 rather than
+        # paying for the same rejection again.
+        assert second.keys == ["placeholder-primary-1"]
+    finally:
+        llm._attempt = original
+        llm._KEY_CURSOR.clear()
+
+
+def test_no_key_configured_is_a_clean_failure():
+    prov = ProviderSettings(
+        role="primary", api_keys=(), base_url="u", model="m", timeout_s=5
+    )
+    with pytest.raises(ProviderFailure, match="no API key"):
+        run_call(KeyRecorder(), prov)
+
+
+def test_a_rotated_key_is_never_written_to_the_log(caplog):
+    prov = provider("primary", "m", keys=2)
+    recorder = KeyRecorder(FakeRateLimit("429"), GOOD)
+    with caplog.at_level("INFO", logger="gridwise.llm"):
+        run_call(recorder, prov)
+    for key in prov.api_keys:
+        assert key not in caplog.text

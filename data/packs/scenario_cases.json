@@ -1,0 +1,246 @@
+{
+  "_meta": {
+    "title": "GridWise - Extended Scenario Test Set (unofficial, team-generated)",
+    "purpose": "Full 24-hour scenarios that stress the OPTIMIZER and the directive-application path, not just the language layer. Structural situations the 10 public samples never hit: battery starting full, battery starting at minimum, reserve binding at hour 0, wraparound windows, flat tariff, solar surplus forcing curtailment, and one deliberately infeasible case.",
+    "official": false,
+    "warning": "These are NOT organizer cases. Reference optimal costs are NOT provided except where the value is provable by hand (see expected_cost_bdt). Do not treat a cost difference against another implementation as a failure unless your own validity checks pass first.",
+    "how_to_expand": "Each scenario names a profile. Build the API request as: {scenario_id: <id>, operator_notes: <operator_notes>, battery: <battery>, hours: [{hour: h, demand_kwh: profile.demand_kwh[h], solar_kwh: profile.solar_kwh[h], tariff_bdt_per_kwh: profile.tariff_bdt_per_kwh[h]} for h in 0..23]}. Every profile array has exactly 24 entries indexed by hour.",
+    "how_to_judge": [
+      "1. Interpretation: compare directive_interpretation against expected_interpretation (explanation text is not matched).",
+      "2. Validity: replay hourly_plan yourself - 24 unique hours, energy balance each hour, solar_used <= effective solar, battery bounds and rate limits, active reserve, no-charge and no-discharge windows, grid caps, end-of-day neutrality, and totals recomputed from hourly_plan.",
+      "3. Cost: only meaningful once validity passes. Where expected_cost_bdt is null, use it as a regression baseline against your own previous runs, not as ground truth."
+    ],
+    "profiles_note": "P1 = evening-peak tariff with moderate solar. P2 = MORNING-peak tariff, which inverts the usual arbitrage direction. P3 = flat tariff with solar that exceeds demand at midday. P4 = zero solar and flat tariff, used as an analytic anchor."
+  },
+
+  "profiles": {
+    "P1": {
+      "label": "Evening peak tariff, moderate solar",
+      "demand_kwh":         [100, 95, 90, 88, 92, 100, 118, 138, 158, 172, 182, 190, 195, 188, 178, 170, 178, 196, 220, 232, 218, 186, 146, 112],
+      "solar_kwh":          [  0,  0,  0,  0,  0,   0,   6,  24,  55,  95, 138, 168, 186, 175, 145,  95,  48,  12,   0,   0,   0,   0,   0,   0],
+      "tariff_bdt_per_kwh": [  7,  6,  5,  5,  5,   6,   8,  10,  12,  14,  16,  17,  16,  15,  13,  14,  18,  23,  29,  32,  28,  19,  11,   8]
+    },
+    "P2": {
+      "label": "MORNING peak tariff - cheap evening, expensive 7-9 AM",
+      "demand_kwh":         [110, 102, 96, 94, 98, 112, 140, 175, 190, 180, 168, 160, 155, 150, 148, 150, 158, 168, 178, 172, 158, 140, 126, 116],
+      "solar_kwh":          [  0,   0,  0,  0,  0,   2,  15,  40,  72, 108, 140, 162, 170, 160, 132,  88,  44,  10,   0,   0,   0,   0,   0,   0],
+      "tariff_bdt_per_kwh": [  9,   8,  7,  7,  8,  12,  20,  28,  31,  27,  18,  14,  12,  11,  11,  12,  14,  16,  18,  17,  14,  11,  10,   9]
+    },
+    "P3": {
+      "label": "Flat tariff, solar EXCEEDS demand at midday - forces curtailment decisions",
+      "demand_kwh":         [90, 85, 82, 80, 84, 92, 105, 125, 145, 158, 165, 170, 172, 168, 160, 152, 158, 170, 185, 192, 180, 158, 124, 100],
+      "solar_kwh":          [ 0,  0,  0,  0,  0,  4,  30,  80, 140, 200, 250, 285, 300, 290, 255, 195, 120,  45,   5,   0,   0,   0,   0,   0],
+      "tariff_bdt_per_kwh": [12, 12, 12, 12, 12, 12,  12,  12,  12,  12,  12,  12,  12,  12,  12,  12,  12,  12,  12,  12,  12,  12,  12,  12]
+    },
+    "P4": {
+      "label": "Zero solar, flat tariff - analytic anchor, every valid plan costs the same",
+      "demand_kwh":         [100, 95, 90, 88, 92, 100, 115, 135, 155, 168, 178, 185, 190, 182, 172, 165, 172, 190, 210, 222, 208, 178, 140, 110],
+      "solar_kwh":          [  0,  0,  0,  0,  0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0],
+      "tariff_bdt_per_kwh": [ 10, 10, 10, 10, 10,  10,  10,  10,  10,  10,  10,  10,  10,  10,  10,  10,  10,  10,  10,  10,  10,  10,  10,  10]
+    }
+  },
+
+  "scenarios": [
+    {
+      "id": "SC-01",
+      "label": "Tight feeder cap forces pre-charging",
+      "profile": "P1",
+      "operator_notes": [
+        "Grid import must not exceed 170 kWh in any hour from 6 PM until 9 PM while the feeder is derated."
+      ],
+      "battery": {"capacity_kwh": 320, "initial_energy_kwh": 110, "minimum_energy_kwh": 40, "max_charge_kwh_per_hour": 80, "max_discharge_kwh_per_hour": 80},
+      "expected_interpretation": [
+        {"note_index": 0, "applies": true, "directive_type": "max_grid_window", "structured_adjustment": {"hours": [18, 19, 20], "max_grid_kwh": 170}}
+      ],
+      "purpose": "The cap is genuinely binding. Demand is 220/232/218 with zero solar, so the plan MUST discharge at least 50/62/48 kWh in those hours, which in turn forces charging earlier in the day.",
+      "feasibility": "Feasible. Peak forced discharge is 62 <= 80. Battery must reach at least 200 kWh before hour 18 (40 minimum + 160 total forced discharge); starting at 110 that needs only 90 kWh of net charging across hours 0-17. Capacity 320 is ample, and 70 kWh of recharging across hours 21-23 restores the initial 110.",
+      "expected_cost_bdt": null,
+      "checks": ["grid_kwh <= 170 at hours 18, 19, 20", "battery never below 40", "final battery energy = 110"]
+    },
+    {
+      "id": "SC-02",
+      "label": "Reserve binds at the very first hour",
+      "profile": "P2",
+      "operator_notes": [
+        "Keep at least 150 kWh in the battery from midnight until 4 AM for the overnight data hall."
+      ],
+      "battery": {"capacity_kwh": 260, "initial_energy_kwh": 120, "minimum_energy_kwh": 40, "max_charge_kwh_per_hour": 70, "max_discharge_kwh_per_hour": 70},
+      "expected_interpretation": [
+        {"note_index": 0, "applies": true, "directive_type": "minimum_battery_reserve", "structured_adjustment": {"hours": [0, 1, 2, 3], "minimum_energy_kwh": 150}}
+      ],
+      "purpose": "The reserve exceeds initial_energy_kwh, so the battery must charge IN hour 0 before it has done anything else. Catches implementations that apply reserves only from hour 1 onward or that assume the reserve is an evening concept.",
+      "feasibility": "Feasible. Hour 0 needs at least 30 kWh of charging, well under the 70 kWh rate limit.",
+      "expected_cost_bdt": null,
+      "checks": ["battery_energy_after_kwh >= 150 at hours 0, 1, 2, 3", "hour 0 battery_action is charge with battery_kwh >= 30"]
+    },
+    {
+      "id": "SC-03",
+      "label": "Battery starts completely full",
+      "profile": "P1",
+      "operator_notes": [
+        "Hold at least 200 kWh in the battery from 6 PM until 10 PM.",
+        "The seminar room booking was moved to next week."
+      ],
+      "battery": {"capacity_kwh": 240, "initial_energy_kwh": 240, "minimum_energy_kwh": 40, "max_charge_kwh_per_hour": 60, "max_discharge_kwh_per_hour": 60},
+      "expected_interpretation": [
+        {"note_index": 0, "applies": true, "directive_type": "minimum_battery_reserve", "structured_adjustment": {"hours": [18, 19, 20, 21], "minimum_energy_kwh": 200}},
+        {"note_index": 1, "applies": false, "directive_type": "no_op", "structured_adjustment": null}
+      ],
+      "purpose": "initial_energy_kwh equals capacity_kwh, so no charging is possible at hour 0 and the plan must discharge before it can ever charge. Neutrality then forces a return to a completely full pack.",
+      "feasibility": "Feasible - an all-idle plan already satisfies the 200 kWh reserve.",
+      "expected_cost_bdt": null,
+      "checks": ["no hour has battery_energy_after_kwh > 240", "hour 0 is not a charge action", "final battery energy = 240"]
+    },
+    {
+      "id": "SC-04",
+      "label": "Battery starts at its minimum, cheap hours blocked",
+      "profile": "P2",
+      "operator_notes": [
+        "The battery charger will be isolated from 2 AM until 5 AM for electrical maintenance."
+      ],
+      "battery": {"capacity_kwh": 250, "initial_energy_kwh": 45, "minimum_energy_kwh": 45, "max_charge_kwh_per_hour": 60, "max_discharge_kwh_per_hour": 60},
+      "expected_interpretation": [
+        {"note_index": 0, "applies": true, "directive_type": "no_charge_window", "structured_adjustment": {"hours": [2, 3, 4]}}
+      ],
+      "purpose": "initial_energy_kwh equals minimum_energy_kwh, so there is zero discharge headroom at the start, and the no-charge window removes three of the cheapest overnight hours. On the P2 morning-peak profile the optimizer must charge in hours 0-1 to serve the 7-9 AM peak.",
+      "feasibility": "Feasible - an all-idle plan works.",
+      "expected_cost_bdt": null,
+      "checks": ["battery_kwh with action charge is 0 at hours 2, 3, 4", "battery never below 45", "no discharge before the battery has been charged"]
+    },
+    {
+      "id": "SC-05",
+      "label": "Flat tariff with midday solar surplus",
+      "profile": "P3",
+      "operator_notes": [
+        "The campus shuttle schedule changes from next Sunday."
+      ],
+      "battery": {"capacity_kwh": 300, "initial_energy_kwh": 120, "minimum_energy_kwh": 50, "max_charge_kwh_per_hour": 90, "max_discharge_kwh_per_hour": 90},
+      "expected_interpretation": [
+        {"note_index": 0, "applies": false, "directive_type": "no_op", "structured_adjustment": null}
+      ],
+      "purpose": "Tariff is flat, so time-of-use arbitrage is worthless - but solar exceeds demand for six hours, so storing free surplus solar and releasing it in the evening is still strictly profitable. Tests that the optimizer finds a saving that has nothing to do with price, and that it does NOT cycle the battery pointlessly outside the surplus window.",
+      "feasibility": "Feasible.",
+      "expected_cost_bdt": null,
+      "cost_hint": "The pack can only carry 180 kWh above its starting level (300 capacity minus 120 initial) and must end back at 120, so the maximum achievable saving versus a solar-only plan is 180 kWh x 12 BDT = 2160 BDT. A correct optimizer should capture close to all of it.",
+      "checks": ["solar_used_kwh <= solar_kwh every hour", "no charge/discharge pair that cancels out for no gain", "final battery energy = 120"]
+    },
+    {
+      "id": "SC-06",
+      "label": "ANALYTIC ANCHOR - zero solar, flat tariff",
+      "profile": "P4",
+      "operator_notes": [
+        "Last month's electricity bill has been settled with the utility."
+      ],
+      "battery": {"capacity_kwh": 200, "initial_energy_kwh": 80, "minimum_energy_kwh": 40, "max_charge_kwh_per_hour": 50, "max_discharge_kwh_per_hour": 50},
+      "expected_interpretation": [
+        {"note_index": 0, "applies": false, "directive_type": "no_op", "structured_adjustment": null}
+      ],
+      "purpose": "The single most valuable regression test in this file. With no solar and a flat tariff, end-of-day neutrality forces total charge to equal total discharge, so total grid energy equals total demand for EVERY valid plan. Cost is therefore fixed at exactly 36400 BDT.",
+      "feasibility": "Feasible.",
+      "expected_cost_bdt": 36400,
+      "expected_total_grid_kwh": 3640,
+      "checks": [
+        "total_cost_bdt must equal 36400 within 0.01 - any other value means the plan is invalid or the totals are mis-reported",
+        "total_grid_kwh must equal 3640 within 0.01",
+        "a correct optimizer should leave the battery idle all day, since cycling it cannot help"
+      ]
+    },
+    {
+      "id": "SC-07",
+      "label": "Solar blackout plus evening discharge lockout",
+      "profile": "P1",
+      "operator_notes": [
+        "The inverter will be offline from 11 AM until 2 PM, so treat usable solar as zero.",
+        "No battery discharge from 6 PM until 8 PM during protection tests."
+      ],
+      "battery": {"capacity_kwh": 300, "initial_energy_kwh": 130, "minimum_energy_kwh": 40, "max_charge_kwh_per_hour": 70, "max_discharge_kwh_per_hour": 70},
+      "expected_interpretation": [
+        {"note_index": 0, "applies": true, "directive_type": "solar_reduction", "structured_adjustment": {"hours": [11, 12, 13], "factor": 0.0}},
+        {"note_index": 1, "applies": true, "directive_type": "no_discharge_window", "structured_adjustment": {"hours": [18, 19]}}
+      ],
+      "purpose": "factor 0.0 removes the three best solar hours (168/186/175 kWh), and the discharge lockout removes the two most expensive hours (29 and 32 BDT) from the battery's reach. Together they push the optimum somewhere non-obvious. Also checks that factor 0.0 is not silently dropped as a falsy value.",
+      "feasibility": "Feasible.",
+      "expected_cost_bdt": null,
+      "checks": ["solar_used_kwh = 0 at hours 11, 12, 13", "no discharge at hours 18, 19", "final battery energy = 130"]
+    },
+    {
+      "id": "SC-08",
+      "label": "Three hard directives at once",
+      "profile": "P1",
+      "operator_notes": [
+        "Keep at least 120 kWh in the battery from 6 PM until 10 PM for emergency services.",
+        "Grid import must stay at or below 185 kWh from 7 PM until 9 PM.",
+        "Do not charge the battery from 1 PM until 4 PM while the charger is inspected."
+      ],
+      "battery": {"capacity_kwh": 300, "initial_energy_kwh": 120, "minimum_energy_kwh": 40, "max_charge_kwh_per_hour": 80, "max_discharge_kwh_per_hour": 80},
+      "expected_interpretation": [
+        {"note_index": 0, "applies": true, "directive_type": "minimum_battery_reserve", "structured_adjustment": {"hours": [18, 19, 20, 21], "minimum_energy_kwh": 120}},
+        {"note_index": 1, "applies": true, "directive_type": "max_grid_window", "structured_adjustment": {"hours": [19, 20], "max_grid_kwh": 185}},
+        {"note_index": 2, "applies": true, "directive_type": "no_charge_window", "structured_adjustment": {"hours": [13, 14, 15]}}
+      ],
+      "purpose": "All three directive families interact. The cap forces at least 47 kWh of discharge at hour 19 and 33 kWh at hour 20, the reserve says the pack may not drop below 120 kWh while that happens, and the no-charge window removes the hours where midday solar would most naturally have refilled it.",
+      "feasibility": "Feasible, and tight by design. Battery must reach 200 kWh before hour 19; it starts at 120 and charging is blocked only at 13-15, leaving plenty of other hours. Discharging exactly 80 kWh across hours 19-20 lands the pack back at 120, which also satisfies end-of-day neutrality with no further action.",
+      "expected_cost_bdt": null,
+      "checks": ["grid_kwh <= 185 at hours 19, 20", "battery_energy_after_kwh >= 120 at hours 18, 19, 20, 21", "no charging at hours 13, 14, 15", "final battery energy = 120"]
+    },
+    {
+      "id": "SC-09",
+      "label": "Wraparound no-charge window plus a morning cap",
+      "profile": "P2",
+      "operator_notes": [
+        "Charging is prohibited from 10 PM until 1 AM.",
+        "We cannot pull more than 200 kWh from the grid in any hour from 7 AM to 10 AM."
+      ],
+      "battery": {"capacity_kwh": 240, "initial_energy_kwh": 100, "minimum_energy_kwh": 40, "max_charge_kwh_per_hour": 60, "max_discharge_kwh_per_hour": 60},
+      "expected_interpretation": [
+        {"note_index": 0, "applies": true, "directive_type": "no_charge_window", "structured_adjustment": {"hours": [0, 22, 23]}},
+        {"note_index": 1, "applies": true, "directive_type": "max_grid_window", "structured_adjustment": {"hours": [7, 8, 9], "max_grid_kwh": 200}}
+      ],
+      "purpose": "Two subtleties at once. The no-charge window wraps past midnight and must come back as [0,22,23] in ascending order. The grid cap is NOT binding on demand alone (base grid need is 135/118/72 kWh) - it only bites if the optimizer tries to charge during the morning peak, which on P2 is exactly when it must not.",
+      "feasibility": "Feasible.",
+      "expected_cost_bdt": null,
+      "checks": ["no charging at hours 0, 22, 23", "grid_kwh <= 200 at hours 7, 8, 9", "hours array is ascending, not [22,23,0]"]
+    },
+    {
+      "id": "SC-10",
+      "label": "Solar surplus with charging blocked - forced curtailment",
+      "profile": "P3",
+      "operator_notes": [
+        "Battery charging is disabled from 10 AM until 2 PM while technicians inspect the charger.",
+        "A vendor demo of new inverters is scheduled for next Thursday."
+      ],
+      "battery": {"capacity_kwh": 300, "initial_energy_kwh": 120, "minimum_energy_kwh": 50, "max_charge_kwh_per_hour": 90, "max_discharge_kwh_per_hour": 90},
+      "expected_interpretation": [
+        {"note_index": 0, "applies": true, "directive_type": "no_charge_window", "structured_adjustment": {"hours": [10, 11, 12, 13]}},
+        {"note_index": 1, "applies": false, "directive_type": "no_op", "structured_adjustment": null}
+      ],
+      "purpose": "Charging is blocked during exactly the four hours where solar exceeds demand by the largest margin, so a large amount of free solar MUST be curtailed. Checks that the service treats solar_used_kwh as an inequality and does not try to force all available solar into the balance equation.",
+      "feasibility": "Feasible.",
+      "expected_cost_bdt": null,
+      "checks": ["solar_used_kwh is strictly less than solar_kwh at hours 10-13", "grid_kwh = 0 at those hours", "no charging at hours 10, 11, 12, 13", "final battery energy = 120"]
+    },
+    {
+      "id": "SC-11",
+      "label": "DELIBERATELY INFEASIBLE - fallback ladder test",
+      "profile": "P1",
+      "operator_notes": [
+        "Grid import must not exceed 120 kWh in any hour from 6 PM until 9 PM.",
+        "The battery must not discharge from 6 PM until 8 PM during protection testing."
+      ],
+      "battery": {"capacity_kwh": 300, "initial_energy_kwh": 130, "minimum_energy_kwh": 40, "max_charge_kwh_per_hour": 70, "max_discharge_kwh_per_hour": 70},
+      "expected_interpretation": [
+        {"note_index": 0, "applies": true, "directive_type": "max_grid_window", "structured_adjustment": {"hours": [18, 19, 20], "max_grid_kwh": 120}},
+        {"note_index": 1, "applies": true, "directive_type": "no_discharge_window", "structured_adjustment": {"hours": [18, 19]}}
+      ],
+      "purpose": "ROBUSTNESS ONLY - not a scoring shape. At hour 18 demand is 220 kWh with zero solar and discharging is forbidden, so grid import cannot go below 220 while the cap says 120. No valid schedule exists. Organizers promise their scoring scenarios are feasible, but a hallucinated directive can produce exactly this, so the service must survive it.",
+      "feasibility": "INFEASIBLE by construction.",
+      "expected_cost_bdt": null,
+      "checks": [
+        "HTTP 200, never 500, and never a timeout",
+        "directive_interpretation is still returned correctly for both notes",
+        "hourly_plan is still schema-valid and satisfies all base GridWise rules (balance, battery bounds, rate limits, neutrality)",
+        "the elastic fallback should violate the directives as little as possible and plan_summary should say a constraint could not be fully met"
+      ]
+    }
+  ]
+}
