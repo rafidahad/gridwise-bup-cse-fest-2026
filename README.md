@@ -132,11 +132,11 @@ inside the PuLP wheel, so no separate solver installation is needed locally.
 **1. Get the source**
 
 ```bash
-git clone https://github.com/plasma-gith/GridWise.git
+git clone https://github.com/plasma-gith/gridwise-bup-cse-fest-2026.git
 ```
 
 ```bash
-cd GridWise
+cd gridwise-bup-cse-fest-2026
 ```
 
 **2. Create a virtual environment**
