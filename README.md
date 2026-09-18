@@ -14,8 +14,6 @@ schedule before returning it.
 | Main endpoint | `POST /optimize-energy` |
 | Model | Groq `openai/gpt-oss-120b` |
 | Solver | PuLP + COIN-OR CBC |
-| Tests | 187, no API key required |
-| Public samples | 10/10 valid · 10/10 optimal cost · p95 1.93 s |
 
 ---
 
