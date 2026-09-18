@@ -8,12 +8,43 @@ trace, so a misconfiguration is diagnosable without printing a key.
 from __future__ import annotations
 
 import os
+import pathlib
 from dataclasses import dataclass, field
 
 # Absolute tolerance published by PS §11.5 / Guide §08. Used for every public
 # numeric comparison. Internal checks use the tighter epsilon below.
 TOLERANCE = 0.01
 INTERNAL_EPS = 1e-6
+
+
+def _load_dotenv() -> None:
+    """Load a local .env, without ever overriding a real environment variable.
+
+    The README quickstart tells an organizer to copy `.env.example` to `.env`
+    and fill in credentials, so something has to read it. Precedence matters:
+    a variable already exported wins, which keeps `docker run -e ...` and CI
+    authoritative and leaves `.env` as a local convenience only.
+
+    Parsed by hand rather than pulling in a dependency for eleven lines. Values
+    are read as-is; only surrounding quotes are stripped.
+    """
+    path = pathlib.Path(__file__).resolve().parents[1] / ".env"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        name = name.strip()
+        value = value.strip().strip('"').strip("'")
+        if name and name not in os.environ:
+            os.environ[name] = value
+
+
+_load_dotenv()
 
 
 def _env_str(name: str, default: str) -> str:
