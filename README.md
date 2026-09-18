@@ -8,10 +8,6 @@ language model, turns the validated interpretation into hard constraints, solves
 for the cheapest feasible 24-hour schedule, and independently replays the
 schedule before returning it.
 
-> **Status:** Stage 1 of 7 (contract and delivery skeleton). `GET /health` is
-> live. `POST /optimize-energy` is wired in Stage 4. This notice is removed when
-> the pipeline is complete.
-
 ---
 
 ## 1. Architecture

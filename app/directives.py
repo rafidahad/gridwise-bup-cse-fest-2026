@@ -22,6 +22,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.config import TOLERANCE
 from app.schemas import (
     OPERATIONAL_DIRECTIVES,
     BatteryInput,
@@ -367,8 +368,23 @@ def compile_limits(
     """
     trace: list[str] = []
 
+    # PS S11.5 treats values within 0.01 as equivalent, so an initial energy
+    # marginally under the base reserve is equal to it as far as the judge is
+    # concerned. Without this, neutrality would pin the final state just below
+    # an exact LP bound and report a boundary scenario as infeasible. The
+    # relaxation is capped at the published tolerance and never applies to a
+    # materially low initial energy, which HTTP 422 already rejects upstream.
+    base_reserve = float(battery.minimum_energy_kwh)
+    initial = float(battery.initial_energy_kwh)
+    if 0 < base_reserve - initial <= TOLERANCE:
+        trace.append(
+            f"base reserve {base_reserve} relaxed to the initial energy {initial}: "
+            f"the gap is within the {TOLERANCE} tolerance"
+        )
+        base_reserve = initial
+
     effective_solar = [0.0] * 24
-    minimum_reserve = [float(battery.minimum_energy_kwh)] * 24
+    minimum_reserve = [base_reserve] * 24
     maximum_charge = [float(battery.max_charge_kwh_per_hour)] * 24
     maximum_discharge = [float(battery.max_discharge_kwh_per_hour)] * 24
     maximum_grid: list[float | None] = [None] * 24

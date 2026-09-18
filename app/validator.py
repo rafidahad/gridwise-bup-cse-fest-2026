@@ -286,3 +286,16 @@ def validate_response(
         )
 
     return problems
+
+
+class ReplayFailure(Exception):
+    """The response failed its own independent replay and must not be sent.
+
+    Reaching this means the service produced a schedule it cannot itself
+    verify. Returning it anyway would risk an invalid case (Guide S09), so the
+    caller converts this into a controlled error instead.
+    """
+
+    def __init__(self, problems: list[str]) -> None:
+        super().__init__("; ".join(problems))
+        self.problems = problems
