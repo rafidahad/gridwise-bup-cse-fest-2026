@@ -13,7 +13,7 @@ schedule before returning it.
 | Health endpoint | `GET /health` |
 | Main endpoint | `POST /optimize-energy` |
 | Primary model | Groq (OpenAI-compatible) |
-| Backup model | NVIDIA NIM (OpenAI-compatible, independent provider) |
+| Secondary model | Optional, unconfigured by default |
 | Solver | PuLP + COIN-OR CBC |
 | Docker image | `gridwise:1.0.0` — see [section 9](#9-docker-fallback) |
 
@@ -52,7 +52,7 @@ FastAPI + Pydantic ─────── structural validation → 400
         │                  semantic validation   → 422
         ▼
 LLM interpretation ─────── one call, JSON output, notes → structured directives
-        │                  bounded repair → independent-provider backup
+        │                  bounded repair, then an optional secondary model
         ▼
 Deterministic guardrails ─ model output is untrusted data until it validates
         │
@@ -85,7 +85,7 @@ fall back to a hard-coded reading of the notes.
 | Language | Python 3.12 (image) / 3.12+ (local) | Application and deterministic logic |
 | API | FastAPI 0.141.1 + Uvicorn 0.53.0 | Endpoints, JSON, explicit status codes |
 | Schemas | Pydantic 2.13.5 | Request and response contracts |
-| Interpretation | Groq primary, NVIDIA NIM backup | Notes → structured directives |
+| Interpretation | Groq (`openai/gpt-oss-120b`) | Notes → structured directives |
 | Compiler | Plain Python | Directives → hourly bounds |
 | Optimization | PuLP 3.3.2 + CBC | Minimum-cost feasible schedule |
 | Replay | Independent plain Python | Verify the actual response |
@@ -173,7 +173,7 @@ cp .env.example .env
 ```
 
 Edit `.env` and fill in `GRIDWISE_PRIMARY_API_KEY` and
-`GRIDWISE_BACKUP_API_KEY`. The file contains placeholders only; it is
+`GRIDWISE_PRIMARY_API_KEYS`. The file contains placeholders only; it is
 git-ignored and must never be committed.
 
 **5. Start the service**
@@ -217,9 +217,9 @@ holds **placeholders only, never real credentials**.
 | `GRIDWISE_PRIMARY_API_KEYS` | Primary provider keys (Groq), comma separated | — |
 | `GRIDWISE_PRIMARY_BASE_URL` | Primary OpenAI-compatible base URL | `https://api.groq.com/openai/v1` |
 | `GRIDWISE_PRIMARY_MODEL` | Primary model identifier | `openai/gpt-oss-120b` |
-| `GRIDWISE_BACKUP_API_KEYS` | Backup provider keys (NVIDIA NIM), comma separated | — |
-| `GRIDWISE_BACKUP_BASE_URL` | Backup OpenAI-compatible base URL | `https://integrate.api.nvidia.com/v1` |
-| `GRIDWISE_BACKUP_MODEL` | Backup model identifier | `mistralai/mistral-nemotron` |
+| `GRIDWISE_BACKUP_API_KEYS` | Optional secondary keys, comma separated | — (disabled) |
+| `GRIDWISE_BACKUP_BASE_URL` | Optional secondary base URL | — (disabled) |
+| `GRIDWISE_BACKUP_MODEL` | Optional secondary model identifier | — (disabled) |
 | `GRIDWISE_TEMPERATURE` | Sampling temperature | `0` |
 | `GRIDWISE_SEED` | Best-effort seed, omitted when unset | `7` |
 | `GRIDWISE_MAX_OUTPUT_TOKENS` | Output cap for the interpretation call | `1200` |
@@ -231,14 +231,21 @@ holds **placeholders only, never real credentials**.
 | `GRIDWISE_HOST` / `GRIDWISE_PORT` | Bind address and port | `0.0.0.0` / `8000` |
 | `GRIDWISE_LOG_LEVEL` | Log verbosity | `INFO` |
 
-### Why these two providers
+### The optional secondary model
 
-Groq and NVIDIA NIM both expose OpenAI-compatible chat-completions endpoints, so
-a single client abstraction serves both — while they remain **independent
-providers**. A Groq outage, rate limit, or quota rejection does not disable the
-backup, which a second model at the same provider could not guarantee. Both
-models perform genuine language interpretation, pass through identical schema
-guardrails, and are measured on the same held-out semantic set.
+The service runs on one provider by default. A backup is **permitted but never
+required** — Guide §04 says "a local or backup model is allowed", and plan §6.1
+calls it a reliability feature rather than an obligation. With the three
+`GRIDWISE_BACKUP_*` variables unset, the third recovery step is skipped and
+recovery ends after the primary's targeted repair.
+
+Any OpenAI-compatible endpoint can fill the slot. A second Groq model adds a
+different reading of a note, but shares Groq's availability, so it does not
+protect against a provider outage.
+
+**Known consequence:** with no secondary configured, a Groq outage fails every
+request. Credentials, quota, and availability are the team's responsibility
+under Guide §04.
 
 ### Key rotation
 
@@ -251,12 +258,12 @@ attempt, so exhausted keys cannot eat the request deadline.
 Rotation is **not** a second interpretation attempt and does not consume the
 primary/repair/backup budget — the same question is re-asked on a credential
 that still has headroom. A timeout or connection failure is the provider's
-fault rather than the key's, so it fails over to the independent backup instead
-of burning the remaining keys. Keys never appear in logs; only their position
+fault rather than the key's, so it stops instead of burning the remaining
+keys. Keys never appear in logs; only their position
 (`key 2/4`) is recorded.
 
-The singular `GRIDWISE_PRIMARY_API_KEY` / `GRIDWISE_BACKUP_API_KEY` names still
-work for a single credential.
+The singular `GRIDWISE_PRIMARY_API_KEY` name still works for a single
+credential.
 
 ### Inference settings
 
@@ -281,9 +288,6 @@ and the three team packs. Narrow it with
 prompt.
 
 ```bash
-python scripts/semantic_eval.py --role backup --repeat 3 --json backup.json
-```
-
 This scores the 34 held-out cases in `data/semantic_cases.json` along the
 rubric's own dimensions — relevance/`no_op`, directive type, affected hours,
 numeric values and shape — plus paraphrase-cluster agreement, run-to-run
@@ -708,7 +712,8 @@ valid, interpreted as published, and at the optimal cost.
 
 | Measurement | Result |
 |---|---|
-| Deterministic path (compile, solve, build, replay), p95 over 100 runs | **88 ms** — 0.29% of the 30 s judge timeout |
+| Full live request (interpret, compile, solve, replay), p95 over the 10 public samples | **1.93 s** — Guide §08 band 3/3 |
+| Deterministic path alone (compile, solve, build, replay), p95 over 100 runs | **88 ms** — 0.29% of the 30 s judge timeout |
 | Container start to `/health` 200 | **3 s**, against the 60 s requirement |
 | Both provider attempts on total outage | ~200 ms to a controlled error |
 
@@ -729,7 +734,7 @@ docker build -t gridwise:1.0.0 .
 ### Run
 
 ```bash
-docker run --rm -p 8000:8000 -e GRIDWISE_PRIMARY_API_KEY=your-groq-key -e GRIDWISE_BACKUP_API_KEY=your-nvidia-key gridwise:1.0.0
+docker run --rm -p 8000:8000 -e GRIDWISE_PRIMARY_API_KEYS=your-groq-key gridwise:1.0.0
 ```
 
 Then:
@@ -772,26 +777,30 @@ Locally built image id:
 
 ## 10. Known limitations
 
-- **Live model accuracy is not yet recorded.** The reliability policy — call
-  budget, repair, failover — is fully tested with stubbed providers, and the
-  failover path has been exercised against the real Groq and NVIDIA endpoints.
-  But interpretation accuracy on the held-out set needs real credentials.
-  Run `scripts/semantic_eval.py` for both roles and record the output before
-  relying on a particular model.
-- **The backup provider is not yet dependable.** NVIDIA retires models without
-  notice — `meta/llama-3.3-70b-instruct` reached end of life on 2026-08-26 and
-  now returns HTTP 410. Of the identifiers tried against a live key, only
-  `mistralai/mistral-nemotron` responded at all, and it answered a trivial
-  prompt in 58 s, then returned a 500 and two timeouts on real interpretation
-  calls. Treat the backup as unverified until it is measured working. Confirm
-  any identifier is still served before relying on it:
-  `curl -s https://integrate.api.nvidia.com/v1/models -H "Authorization: Bearer $KEY"`
-- **Groq's free tier is 8,000 tokens per minute**, not the 250K of the paid
-  Developer plan. One interpretation request measured 2,421 tokens (1,930
-  prompt, 352 reasoning, 139 output), so a single key sustains only ~3.3
-  requests per minute. Two keys ran out after eight public samples in ten
-  seconds. Plan for more keys, a paid tier, or a shorter prompt before
-  judging.
+- **Single provider, by choice.** No secondary model is configured, so a Groq
+  outage fails every request. This is permitted — Guide §04 allows a backup
+  rather than requiring one — but it is a deliberate trade, not an oversight.
+  An earlier NVIDIA NIM backup was removed after measurement: most of its
+  catalogue had reached end of life (HTTP 410), and the one reachable model
+  answered a trivial prompt in 58 s, then returned a 500 and two timeouts on
+  real interpretation calls, which is useless against a 30-second judge
+  timeout.
+- **Token throughput is the binding constraint, not latency.** Groq's free
+  tier caps at 8,000 tokens per minute; the paid Developer plan gives 250K.
+  One interpretation request measures 2,421 tokens (1,930 prompt, 352
+  reasoning, 139 output), so a free key sustains only ~3.3 requests per minute
+  and a paid one about 103. On the free tier, two keys were exhausted by eight
+  public samples in ten seconds.
+- **Prompt caching does not currently help.** Groq documents it as automatic
+  on this model, with cached tokens excluded from rate limits, and the prompt
+  is already structured for it (static system text first, per-scenario content
+  last). Measured across three different scenarios, `cached_tokens` came back
+  empty every time and the full ~2,200 tokens were debited. The docs say cache
+  hits are "not guaranteed", so this is not something to rely on.
+- **Interpretation accuracy is measured on the public set only.** A live run
+  on `openai/gpt-oss-120b` matched **10/10** published interpretations and
+  reached **10/10** optimal costs at p95 1.93 s. The 166-case held-out and
+  team packs have not yet been run end to end against a live model.
 - **The solar-overlap rule is a defined policy, not a known-correct one.** See
   [section 7](#7-documented-policies-for-open-questions). It is chosen because
   it cannot cause solar overuse under either reading, at the cost of a slightly
@@ -839,9 +848,8 @@ Locally built image id:
 | [Pydantic](https://docs.pydantic.dev/) | Schema validation |
 | [PuLP](https://coin-or.github.io/pulp/) | LP modelling |
 | [COIN-OR CBC](https://github.com/coin-or/Cbc) | LP solver |
-| [OpenAI Python SDK](https://github.com/openai/openai-python) | Client for the OpenAI-compatible Groq and NVIDIA endpoints |
-| [Groq](https://groq.com/) | Primary inference provider |
-| [NVIDIA NIM](https://build.nvidia.com/) | Backup inference provider |
+| [OpenAI Python SDK](https://github.com/openai/openai-python) | Client for Groq's OpenAI-compatible endpoint |
+| [Groq](https://groq.com/) | Inference provider |
 | [pytest](https://docs.pytest.org/) · [httpx](https://www.python-httpx.org/) | Testing |
 | [Docker](https://www.docker.com/) · [Debian](https://www.debian.org/) | Container image and base |
 

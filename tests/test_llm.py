@@ -344,14 +344,12 @@ class KeyRecorder:
 def run_call(recorder, prov, cfg=None, timeout_s=5.0):
     original = llm._attempt
     llm._attempt = recorder
-    llm._KEY_CURSOR.clear()
     try:
         return asyncio.run(
             llm._call_model(prov, [{"role": "user", "content": "x"}], cfg or settings(), timeout_s)
         )
     finally:
         llm._attempt = original
-        llm._KEY_CURSOR.clear()
 
 
 GOOD = '{"interpretations": [{"note_index": 0, "applies": false, "directive_type": "no_op", "structured_adjustment": null, "explanation": "x"}]}'
@@ -399,24 +397,27 @@ def test_a_bad_request_does_not_rotate():
     assert len(recorder.keys) == 1
 
 
-def test_the_cursor_sticks_so_later_requests_skip_a_spent_key():
+def test_every_request_restarts_at_the_preferred_key():
+    """Order is preference order, so a brief burst must not strand us.
+
+    Carrying the cursor forward would hand every later request to a weaker
+    credential once the strongest one rate-limited for a few seconds - fatal
+    when a 250K TPM key sits beside 8K ones.
+    """
     prov = provider("primary", "m", keys=3)
     original = llm._attempt
-    llm._KEY_CURSOR.clear()
     try:
         first = KeyRecorder(FakeRateLimit("429"), GOOD)
         llm._attempt = first
         asyncio.run(llm._call_model(prov, [], settings(), 5.0))
+        assert first.keys == ["placeholder-primary-0", "placeholder-primary-1"]
 
         second = KeyRecorder(GOOD)
         llm._attempt = second
         asyncio.run(llm._call_model(prov, [], settings(), 5.0))
-        # Key 0 was spent, so the next request starts at key 1 rather than
-        # paying for the same rejection again.
-        assert second.keys == ["placeholder-primary-1"]
+        assert second.keys == ["placeholder-primary-0"]
     finally:
         llm._attempt = original
-        llm._KEY_CURSOR.clear()
 
 
 def test_no_key_configured_is_a_clean_failure():

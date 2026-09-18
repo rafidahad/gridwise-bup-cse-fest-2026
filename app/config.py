@@ -93,9 +93,9 @@ def _env_keys(plural: str, singular: str) -> tuple[str, ...]:
 class ProviderSettings:
     """One OpenAI-compatible inference endpoint, with one or more credentials.
 
-    Groq and NVIDIA NIM both speak the OpenAI chat-completions format, so a
-    single client shape covers the primary and the backup while they remain
-    independent providers (plan §6.1).
+    Any OpenAI-compatible chat-completions endpoint fits here, so one client
+    shape covers the primary and an optional secondary without either being
+    tied to a particular vendor.
     """
 
     role: str
@@ -165,11 +165,18 @@ def load_settings() -> Settings:
         model=_env_str("GRIDWISE_PRIMARY_MODEL", "openai/gpt-oss-120b"),
         timeout_s=_env_float("GRIDWISE_PRIMARY_TIMEOUT_S", 9.0),
     )
+    # Optional secondary model. Unconfigured by default: a backup is permitted
+    # by Guide §04 but never required, and plan §6.1 calls it a reliability
+    # feature rather than an obligation. When no key is set it is simply
+    # skipped, and recovery ends after the primary's targeted repair.
+    #
+    # To enable one, point these at any OpenAI-compatible endpoint - a second
+    # Groq model works, though it shares Groq's availability.
     backup = ProviderSettings(
         role="backup",
         api_keys=_env_keys("GRIDWISE_BACKUP_API_KEYS", "GRIDWISE_BACKUP_API_KEY"),
-        base_url=_env_str("GRIDWISE_BACKUP_BASE_URL", "https://integrate.api.nvidia.com/v1"),
-        model=_env_str("GRIDWISE_BACKUP_MODEL", "mistralai/mistral-nemotron"),
+        base_url=_env_str("GRIDWISE_BACKUP_BASE_URL", ""),
+        model=_env_str("GRIDWISE_BACKUP_MODEL", ""),
         timeout_s=_env_float("GRIDWISE_BACKUP_TIMEOUT_S", 9.0),
     )
     return Settings(

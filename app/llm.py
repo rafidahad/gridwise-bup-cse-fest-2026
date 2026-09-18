@@ -18,8 +18,10 @@ straight to the backup: re-asking a provider that just failed spends the budget
 without changing the odds. SDK-level retries are disabled so they cannot
 multiply either the call count or the time budget.
 
-Groq (primary) and NVIDIA NIM (backup) both speak the OpenAI chat-completions
-format, so one client shape serves both while they stay independent providers.
+The secondary model is optional. When it is not configured the third step is
+skipped and recovery ends after the repair, which is compliant: Guide S04
+permits a backup but never requires one. Any OpenAI-compatible endpoint can
+fill the slot, so nothing here is tied to a particular vendor.
 """
 
 from __future__ import annotations
@@ -287,10 +289,6 @@ class RequestBudget:
 # ---------------------------------------------------------------------------
 
 
-#: Where each provider's key cursor currently sits. A benign race between
-#: concurrent requests only costs one wasted attempt, so no lock is taken.
-_KEY_CURSOR: dict[str, int] = {}
-
 #: Most credentials to try inside one logical attempt. Capped so a wall of
 #: exhausted keys cannot eat the whole request deadline.
 MAX_KEY_ATTEMPTS = 3
@@ -402,17 +400,23 @@ async def _call_model(
     re-asked on a credential that still has headroom. It does consume wall
     clock, so the number of credentials tried is capped and the caller's
     deadline still bounds the whole thing.
+
+    Keys are tried in the order configured, and every request restarts from the
+    first one. Order is therefore preference order: put the highest-limit key
+    first. Carrying the position across requests would be better for equal
+    keys, but it strands the service on a weak credential once a strong one has
+    a brief burst - a 250K TPM key rate-limiting for a few seconds would hand
+    every later request to an 8K key that immediately fails. Restarting costs
+    at most one rejected call while the preferred key is unavailable.
     """
     keys = provider.api_keys
     if not keys:
         raise ProviderFailure(f"{provider.role} has no API key configured")
 
     attempts = min(len(keys), MAX_KEY_ATTEMPTS)
-    start_index = _KEY_CURSOR.get(provider.role, 0)
     last_failure = "no attempt was made"
 
-    for offset in range(attempts):
-        index = (start_index + offset) % len(keys)
+    for index in range(attempts):
         started = time.monotonic()
         try:
             content = await _attempt(
@@ -427,9 +431,7 @@ async def _call_model(
             raise
         except Exception as exc:
             reason = type(exc).__name__
-            if _credential_is_spent(exc) and offset + 1 < attempts:
-                # Remember the move so later requests skip the spent key too.
-                _KEY_CURSOR[provider.role] = (index + 1) % len(keys)
+            if _credential_is_spent(exc) and index + 1 < attempts:
                 logger.warning(
                     "inference role=%s key %d/%d rejected (%s); rotating",
                     provider.role,
@@ -443,7 +445,6 @@ async def _call_model(
                 f"{provider.role} call failed: {reason}"
             ) from exc
 
-        _KEY_CURSOR[provider.role] = index
         logger.info(
             "inference role=%s model=%s key=%d/%d elapsed=%.2fs",
             provider.role,
