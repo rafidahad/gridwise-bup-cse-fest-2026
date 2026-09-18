@@ -9,3 +9,5 @@ venv/
 .ruff_cache/
 *.egg-info/
 .DS_Store
+scratch/
+.venv*/

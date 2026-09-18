@@ -1,0 +1,10 @@
+# GridWise — pinned runtime dependencies (plan §3, §12).
+# Versions are the exact ones tested locally (Python 3.14 venv) and in the
+# Docker image (Python 3.12-slim). See README.md "Dependencies".
+
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+pydantic==2.13.5
+pulp==3.3.2
+openai==3.16.0
+httpx==0.28.1
