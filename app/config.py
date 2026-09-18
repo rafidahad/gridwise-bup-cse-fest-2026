@@ -169,7 +169,7 @@ def load_settings() -> Settings:
         role="backup",
         api_keys=_env_keys("GRIDWISE_BACKUP_API_KEYS", "GRIDWISE_BACKUP_API_KEY"),
         base_url=_env_str("GRIDWISE_BACKUP_BASE_URL", "https://integrate.api.nvidia.com/v1"),
-        model=_env_str("GRIDWISE_BACKUP_MODEL", "meta/llama-3.3-70b-instruct"),
+        model=_env_str("GRIDWISE_BACKUP_MODEL", "mistralai/mistral-nemotron"),
         timeout_s=_env_float("GRIDWISE_BACKUP_TIMEOUT_S", 9.0),
     )
     return Settings(

@@ -219,7 +219,7 @@ holds **placeholders only, never real credentials**.
 | `GRIDWISE_PRIMARY_MODEL` | Primary model identifier | `openai/gpt-oss-120b` |
 | `GRIDWISE_BACKUP_API_KEYS` | Backup provider keys (NVIDIA NIM), comma separated | — |
 | `GRIDWISE_BACKUP_BASE_URL` | Backup OpenAI-compatible base URL | `https://integrate.api.nvidia.com/v1` |
-| `GRIDWISE_BACKUP_MODEL` | Backup model identifier | `meta/llama-3.3-70b-instruct` |
+| `GRIDWISE_BACKUP_MODEL` | Backup model identifier | `mistralai/mistral-nemotron` |
 | `GRIDWISE_TEMPERATURE` | Sampling temperature | `0` |
 | `GRIDWISE_SEED` | Best-effort seed, omitted when unset | `7` |
 | `GRIDWISE_MAX_OUTPUT_TOKENS` | Output cap for the interpretation call | `1200` |
@@ -778,9 +778,20 @@ Locally built image id:
   But interpretation accuracy on the held-out set needs real credentials.
   Run `scripts/semantic_eval.py` for both roles and record the output before
   relying on a particular model.
-- **Model identifiers need confirming.** The defaults in `.env.example` are
-  starting points. Confirm both are currently served by your accounts; a
-  retired identifier fails at the first request.
+- **The backup provider is not yet dependable.** NVIDIA retires models without
+  notice — `meta/llama-3.3-70b-instruct` reached end of life on 2026-08-26 and
+  now returns HTTP 410. Of the identifiers tried against a live key, only
+  `mistralai/mistral-nemotron` responded at all, and it answered a trivial
+  prompt in 58 s, then returned a 500 and two timeouts on real interpretation
+  calls. Treat the backup as unverified until it is measured working. Confirm
+  any identifier is still served before relying on it:
+  `curl -s https://integrate.api.nvidia.com/v1/models -H "Authorization: Bearer $KEY"`
+- **Groq's free tier is 8,000 tokens per minute**, not the 250K of the paid
+  Developer plan. One interpretation request measured 2,421 tokens (1,930
+  prompt, 352 reasoning, 139 output), so a single key sustains only ~3.3
+  requests per minute. Two keys ran out after eight public samples in ten
+  seconds. Plan for more keys, a paid tier, or a shorter prompt before
+  judging.
 - **The solar-overlap rule is a defined policy, not a known-correct one.** See
   [section 7](#7-documented-policies-for-open-questions). It is chosen because
   it cannot cause solar overuse under either reading, at the cost of a slightly
